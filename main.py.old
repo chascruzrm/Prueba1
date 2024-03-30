@@ -1,0 +1,71 @@
+from os import environ, system
+from openai import OpenAI
+from colorama import Fore, Back, Style, init
+
+current_system_role = "Eres un asistente para un programador semi senior de Python, nodejs y typescript"
+
+PROMPT = 'CHATGPT> '
+
+client = OpenAI()
+
+def query_gpt(q: str, client: OpenAI, system_role: str = current_system_role):
+
+    if not q or not q.strip():
+        return 'No ha ingresado una consulta.'
+
+    completion = client.chat.completions.create(
+    model="gpt-3.5-turbo",
+    messages=[
+        {"role": "system", "content": system_role},
+        {"role": "user", "content": q}
+    ]
+    )
+    
+    from pprint import pprint
+    # pprint(completion.__dict__, indent=4)
+    
+    return completion.choices[0].message.content
+
+def main():
+    global current_system_role
+    
+    init()
+    
+    pre_conditions = ''
+    
+    while True:
+        q = input(Fore.LIGHTYELLOW_EX + PROMPT + Style.RESET_ALL).strip()
+        
+        if not q:
+            print('\nEscriba sin commillas "!srol" seguido de un espacio y luego de una descripción del rol que desea para el sistema.')
+            print('Presione "S" y luego ENTER para salir.\n')
+        
+        if q.startswith('!srol '):
+            current_system_role = q[6:].strip()
+            print('Ok.\n')
+            continue
+        
+        if q.startswith('! '):
+            try:
+                system(q[2:])
+            except Exception as ex:
+                print(ex)
+                
+            continue
+        
+        if q.startswith('!pre '):
+            pre_conditions = q[4:]
+            continue
+        
+        if q.upper() == 'S':
+            print('Hasta luego.\n')
+            return
+        
+        if pre_conditions:
+            q = pre_conditions + '"""' + q + '"""'
+        
+        print(query_gpt(q, client, current_system_role))
+        
+        
+if __name__ == '__main__':
+    main()
