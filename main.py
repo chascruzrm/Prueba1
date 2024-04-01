@@ -1,22 +1,23 @@
 from datetime import datetime
 import os, sys, string
-from os import environ, system, path
+from os import environ, path
 from openai import OpenAI
 from colorama import Fore, Back, Style, init
 import subprocess
 
 help_str = \
 """
-
-Los comandos que no invocan a ChatGPT empiezan con signo de exclamación !
-
 COMANDOS
     - help o ayuda - Muestra esta ayuda.
-    - s, salir o exit - Sale de la aplicación.
+    - s, salir o exit - Sale de la aplicación si se está en modo "normal".
+    - !s, !salir o !exit - Sale de la aplicación si se está en modo "ChatGPT".
 
     - ? <prompt_chat_gpt> - Consulta a ChatGPT.
     
-    - srol <rol_del_sistema> - Descripción del rol que desea para el sistema.
+    - !chatgptmode - Activa modo exclusivo de conversación con ChatGPT.
+    - !normalmode - Desactiva modo exclusivo de conversación con ChatGPT.
+    
+    - srol <rol_del_sistema> - Descripción del rol que desea para ChatGPT.
     - ! <comando_sistema> - Ejecuta una órden del shell.
     - pre <precondiciones> - Es un texto que se va a anteponer a lo que el usuario ingrese.
     - d1 <delimitador_inicial> - Establece el delimitador inicial de variables. Por defecto "{".
@@ -33,8 +34,8 @@ COMANDOS
     - del <nombre_variable> - Borra una variable.
     - :<nombre_variable> - Interpreta (ejecuta) lo que está dentro de la variable.
     - clearvars - Borra todas las variables definidas.
-    - savevars <nombre_de_grupo_de_varaibles> - Guarda todas las variables al disco.
-    - loadvars <nombre_de_grupo_de_varaibles> - Carga todas las variables del disco a la memoria.
+    - savevars <nombre_de_grupo_de_varaibles> - Guarda todas las variables a un archivo con el nombre del grupo en el disco.
+    - loadvars <nombre_de_grupo_de_varaibles> - Carga todas las variables de un grupo, del disco a la memoria.
     - savedvars - Lista los nombres de grupos de varaibles guardados en el disco.
 
     - setmodel <nombre_modelo_gpt> - Indica a la app qué modelo de GPT usar.
@@ -42,12 +43,13 @@ COMANDOS
     
 VARIABLES EN COMANDOS DE LA APP O EN PROMPTS ENVIADOS A CHATGPT
     - Si define una variable, por ej. con "!s var1=Marcelo" (sin comillas); podrá usarla en un 
-      prompt escribiendo, por ejemplo (sin comillas): "Cuál es el origen del nombre {var1}?". 
+      prompt escribiendo, por ejemplo (sin comillas): "?Cuál es el origen del nombre {var1}?". 
       De esta manera, esta app enviará a ChatGP el siguiente texto expandido (sin comillas): 
-      "Cuál es el origen del nombre Marcelo?"
+      "?Cuál es el origen del nombre Marcelo?"
       
     - La última consulta se almacena en la variable lastq.
     - La última respuesta de ChatGPT se guarda en la variable lastr.
+    - La salida del último comando del sistema operativo otilizado se guarda en la variable lastcmd.
 """
 
 # Preemptively load the readline module so that the 
@@ -57,15 +59,21 @@ try:
 except:
     print('Python readline module no encontrado.')
 
-# ChatGPT role
-current_system_role = "Eres un asistente para un programador semi senior de Python, nodejs y typescript"
 
 "gpt-4-0125-preview"
 "gpt-3.5-turbo"
 CURRENT_AI_MODEL = 'gpt-4-0125-preview'
 
+# Lista de conversación con ChatGPT
+messages = []
+
 # Here we set user's variables
 variables = {}
+
+# ChatGPT role
+variables['CHATGPT_ROLE'] = ''
+variables['SYS_HELP'] = help_str
+variables['BROWSER_PATH'] = '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"'
 
 # Variable interpolation delimiters
 # User can access its variables by referencing them in prompts
@@ -85,8 +93,11 @@ except Exception as ex:
 
 # Place to put saved variables files
 DUMPS_PATH = path.join(SCRIPT_DIR, 'var_dumps')
+SAVED_SESSIONS_PATH = path.join(DUMPS_PATH, 'saved_sessions')
 
 PROMPT = 'CHATGPT>'
+
+only_chatgpt_mode = False
 
 # Variables reservadas
 # SYS_SHELL = 'cmd.exe'
@@ -130,10 +141,25 @@ def adapt_latin(s: str) -> str:
         .replace('ñ', 'n')
         
 
-def query_gpt(q: str, client: OpenAI, system_role: str = current_system_role):
+def query_gpt(q: str, client: OpenAI, system_role: str = ''):
 
+    if not system_role:
+        system_role = variables['CHATGPT_ROLE']
+    
     if not q or not q.strip():
         return 'No ha ingresado una consulta.'
+
+    if not messages:
+        messages.append(
+            {"role": "system", "content": system_role},
+        )
+        
+    messages.append(
+        {"role": "user", "content": q}
+    )
+    
+    suspense = '...' if len(system_role) > VARIABLE_CONTENT_PREVIEW else ''
+    print_warn('Rol del sistema: ' + f'"{system_role[:VARIABLE_CONTENT_PREVIEW]}{suspense}"')
 
     completion = client.chat.completions.create(
         model=CURRENT_AI_MODEL,
@@ -184,7 +210,7 @@ def print_warn(t: any, end='\n'):
     print(Fore.LIGHTYELLOW_EX + str(t) + Style.RESET_ALL, end=end)
 
 
-def save_vars(name: str):
+def save_vars(name: str, dest_dir = None):
 
     if not variables:
         print_err('No hay variables definidas.')
@@ -193,56 +219,64 @@ def save_vars(name: str):
     if not name:
         print_err('Debe ingresar un nombre para guardar.')
         return
+    
+    if not dest_dir: dest_dir = DUMPS_PATH
 
     name = name[:MAX_VARIABLE_NAME_LEN]
 
     try:
-        DUMPS_PATH = path.join(SCRIPT_DIR, 'var_dumps')
-        os.makedirs(DUMPS_PATH, exist_ok=True)
+        os.makedirs(dest_dir, exist_ok=True)
 
         timestamp = datetime.now() \
             .isoformat(timespec='seconds') \
             .replace(':', '-')
 
-        if path.exists(path.join(DUMPS_PATH, name)):
+        if path.exists(path.join(dest_dir, name)):
             os.rename(
-                path.join(DUMPS_PATH, name),
-                path.join(DUMPS_PATH, f'{name}-{timestamp}.bak'))
-            print(f'El nombre "{name}" ya existe. Se creó copia de respaldo.')
+                path.join(dest_dir, name),
+                path.join(dest_dir, f'{name}-{timestamp}.bak'))
+            print_warn(f'El nombre "{name}" ya existe. Se creó copia de respaldo.')
 
-        with open(path.join(DUMPS_PATH, name), 'w+', encoding='utf-8') as f:
+        with open(path.join(dest_dir, name), 'w+', encoding='utf-8') as f:
             for k in variables:
                 v = variables[k].replace('\n', '\\n').replace('\r', '')
                 f.write(f'{k[:MAX_VARIABLE_NAME_LEN]}={v}\n')
 
-        print('Variables guardadas.')
+        print_warn('Variables guardadas.')
 
     except Exception as ex:
         import traceback; traceback.print_exc()
 
 
-def load_vars(name: str):
+def load_vars(name: str, from_dir = None):
     if not name:
         print_err('Debe ingresar un nombre para cargar.')
         return
     
+    if not from_dir: from_dir = DUMPS_PATH
+    
     name = name[:MAX_VARIABLE_NAME_LEN]
     
     try:
-        os.makedirs(DUMPS_PATH, exist_ok=True)
+        os.makedirs(from_dir, exist_ok=True)
 
-        if not path.exists(path.join(DUMPS_PATH, name)):
+        if not path.exists(path.join(from_dir, name)):
             print_err(f'El nombre "{name}" no existe.')
             return
 
-        with open(path.join(DUMPS_PATH, name), 'r', encoding='utf-8') as f:
+        with open(path.join(from_dir, name), 'r', encoding='utf-8') as f:
             while True:
                 l = f.readline()
                 if not l: break
                 l = l.strip('\r\n').replace('\\n', '\n')
                 parts = l.split('=', 1)
-                variables[ parts[0][:MAX_VARIABLE_NAME_LEN] ] = parts[1]
+                variables[ parts[0][:MAX_VARIABLE_NAME_LEN] ] = parts[1] if parts[1] != None else ''
 
+        # Restauramos la ayuda
+        variables['SYS_HELP'] = help_str
+        variables['ggl'] = '! {BROWSER_PATH} http://www.google.com.ar/search?q='
+        variables['wr'] = '! {BROWSER_PATH} https://www.wordreference.com/es/translation.asp?tranword='
+        
         print('Variables cargadas.')
 
     except Exception as ex:
@@ -297,6 +331,12 @@ def run_and_capture_output(cmd: str | list[str]) -> str:
         os.system(cmd)
         return
     
+    print_warn(
+        '*** Advertencia ***\n' 
+        '  Programas de consola que requieran entrada por teclado del usuario,\n'
+        '  presentarán fallas visuales y dichas entradas no serán registradas\n'
+        '  por esta aplicación.\n') 
+    
     proc = subprocess.Popen(
         cmd, 
         shell=True,
@@ -341,15 +381,15 @@ def list_vars_by_value(q: str):
 
 def load_last_session_vars():
     name = 'last_session.save'
-    if not path.exists(path.join(DUMPS_PATH, name)):
-        print('No se ha encontrado archvio de variables de la última sesión.')
+    if not path.exists(path.join(SAVED_SESSIONS_PATH, name)):
+        print_warn('No se ha encontrado archvio de variables de la última sesión.')
         return
-    load_vars(name)
+    load_vars(name, SAVED_SESSIONS_PATH)
 
 
 def save_last_session_vars():
     name = 'last_session.save'
-    save_vars(name)
+    save_vars(name, SAVED_SESSIONS_PATH)
 
 
 def _get_escape_chars_positions(q: str):
@@ -485,6 +525,9 @@ def expand_query(q: str):
 
 
 def _print_preview_variable(k: str):
+    if variables[k] == None:
+        variables[k] = ''
+        
     if len(variables[k]) > VARIABLE_CONTENT_PREVIEW:
         suspense = '...'
     else:
@@ -497,88 +540,159 @@ def _print_preview_variable(k: str):
     print(f'    {Fore.LIGHTCYAN_EX}{k}{Style.RESET_ALL} = {value_preview}{suspense}')
 
 
+# TODO: Pensar en una modalidad para aceptar más de una linea de texto
+# para cuando se pegan muchas lineas de texto desde el portapapeles.
+#
+# while not nl_count >= 2:
+#     q = input(Fore.LIGHTGREEN_EX + ' ')
+#     print(Style.RESET_ALL + '', end='')
+#     if not q:
+#         nl_count += 1
+#     else:
+#         multiline_input += q + '\n'
+#         nl_count = 0
+# q = multiline_input.strip('\r\n')
+
 def main():
-    global current_system_role, CURRENT_AI_MODEL
+    global CURRENT_AI_MODEL
     global delim1, delim2
     global variables
     global Salir
+    global only_chatgpt_mode
     
-    pre_conditions = ''
+    prefix = ''
     
     while True:
         print(Fore.LIGHTYELLOW_EX + PROMPT, end='')
-        q = input(Fore.LIGHTGREEN_EX + ' ').strip()
+        q = input(Fore.LIGHTGREEN_EX + ' ')
         print(Style.RESET_ALL + '', end='')
 
-        if not q:
-            print('Escriba sin comillas "!help" para ayuda, o presione "S" y luego ENTER para salir.\n')
+        if not q.strip():
+            print('Escriba sin comillas "help" para ayuda, o presione "S" y luego ENTER para salir.\n')
             continue
 
-        if q in ('help', 'ayuda'):
+        if only_chatgpt_mode:
+                        
+            if q == '!normalmode':
+                only_chatgpt_mode = False
+                print_warn('Cambiado a modo de uso normal.')
+                continue
+            
+            # Le agrego el signo de pregunta adelante
+            # si ya no lo tiene
+            q = ('?' + q) if q[0] != '?' else q
+            
+        
+        if q in ('help', 'ayuda') or q in ('?help', '?ayuda'):
             print(help_str)
             continue
 
-        if pre_conditions:
-            q = pre_conditions + ': ' + q
+        if q == '!chatgptmode':
+            only_chatgpt_mode = True
+            print_warn(
+                'Cambiado a modo de uso ChatGPT.\n'
+                '  Escriba "!normalmode" para volver al modo normal.\n'
+                '  Escriba "!S" para salir de la aplicación.\n')
+            continue
 
-        if q.startswith(':') and q.find(' ') == -1:
-            name = slugify(q[1:])[:45]
+        if q.startswith('pre '):
+            prefix = q[4:]
+            continue
+
+        if prefix:
+            if not only_chatgpt_mode:
+                q = prefix + q
+
+        # if q.startswith(':') and q.find(' ') == -1:
+        #     name = slugify(q[1:])[:MAX_VARIABLE_NAME_LEN]
+        #     if name in variables:
+        #         q = variables[name]
+        #         suspense = ''
+        #         if len(q) > VARIABLE_CONTENT_PREVIEW:
+        #             suspense = '...'
+        #         print_warn(f'Interpretando "{q[:VARIABLE_CONTENT_PREVIEW]}{suspense}"')
+        #     else:
+        #         print_err(f'Variable "{name}" no definida.')
+        #         continue
+
+        
+        # Interpretar una varaible
+        if q.startswith(':'):
+            parts = q.split(' ', 1)
+            name = slugify(parts[0][1 : 1 + MAX_VARIABLE_NAME_LEN])
+            params = parts[1] if len(parts) == 2 else ''
             if name in variables:
-                q = variables[name]
+                q = variables[name] + params
                 suspense = ''
-                if len(q) > 45:
+                if len(q) > VARIABLE_CONTENT_PREVIEW:
                     suspense = '...'
-                print_warn(f'Interpretando "{q[:45]}{suspense}"')
+                print_warn(f'Interpretando "{q[:VARIABLE_CONTENT_PREVIEW]}{suspense}"')
+                # print_warn(f'Interpretando "{q}"...')
             else:
                 print_err(f'Variable "{name}" no definida.')
                 continue
 
+        # Expandir variable
         try:
             q = expand_query(q)
         except ValueError as ex1:
             print_err(ex1)
             continue
-
         except Exception as ex:
             import traceback; traceback.print_exc()
             continue
 
-        if q.startswith('srol '):
-            current_system_role = q[5:].strip()
-            print('Ok.')
-            continue
+        
+        # Establecer rol de chatgpt
+        if q.startswith('srol'):
+            parts = q.split(' ', 1)
+            if parts[0] == 'srol':
+                if len(parts) == 2:
+                    variables['CHATGPT_ROLE'] = parts[1].strip()
+                    print('Ok.')
+                else:
+                    print_warn(f'El rol actual del asistente es:\n "{variables['CHATGPT_ROLE']}"')
+                    
+                continue
 
+
+        # Ejecutar comando de shell
         if q.startswith('! '):
             try:
                 variables['lastcmd'] = \
                     run_and_capture_output(q[2:])
-                        # [SYS_SHELL, SYS_SHELL_PARAMS, q[2:]])
             except Exception as ex:
                 print_err(ex)                
             continue
         
-        if q.startswith('pre '):
-            pre_conditions = q[4:]
-            continue
 
+        # Delimitador 1
         if q.startswith('d1 '):
             delim1 = q[3:]
             if not delim1: delim1 = '{'
             continue
 
+        
+        # Delimitador 2
         if q.startswith('d2 '):
             delim2 = q[3:]
             if not delim2: delim2 = '}'
             continue
 
+        
+        # Listar variables
         if q in ('v', 'vars') or q.startswith('v ') or q.startswith('vars '):
             list_vars(q)
             continue
         
+        
+        # Buscar dentro de variables
         if q.startswith('findv '):
             list_vars_by_value(q)
             continue
         
+        
+        # Copiar una variable a otra
         if q.startswith('cp '):
             parts = q[3:].split(' ')
             if len(parts) != 2:
@@ -592,6 +706,8 @@ def main():
             variables[parts[1]] = variables[parts[0]]
             continue
         
+        
+        # Renombrar una variable
         if q.startswith('ren '):
             parts = q[4:].split(' ')
             if len(parts) != 2:
@@ -611,14 +727,17 @@ def main():
             continue
 
         
+        
+        # Asignar un valor a una variable
         if q.find('=') in range(0, MAX_VARIABLE_NAME_LEN + 1):
             parts = q.split('=', 1)
             name = parts[0].strip()[:MAX_VARIABLE_NAME_LEN]
             if is_valid_identifier(name):
-                variables[name] = parts[1]
+                variables[name] = parts[1] if parts[1] != None else ''
                 continue
             
 
+        # Borrar una variable
         if q.startswith('del '):
             name = q[4 : 4+MAX_VARIABLE_NAME_LEN]
             if name in variables:
@@ -629,26 +748,33 @@ def main():
             continue
         
 
+        # Borrar todas las variables
         if q == 'clearvars':
             variables.clear()
             continue
         
+        
+        # guardar las variables a un archivo
         if q.startswith('savevars '):
-            name = slugify(q[10:])[:30] + '.save'
+            name = slugify(q[9:])[:MAX_VARIABLE_NAME_LEN] + '.save'
             save_vars(name)
             continue
             
 
+        # cargar variables desde un archivo
         if q.startswith('loadvars '):
-            name = slugify(q[10:])[:30] + '.save'
+            name = slugify(q[9:])[:MAX_VARIABLE_NAME_LEN] + '.save'
             load_vars(name)
             continue
             
 
+        # Lista variables guardadas en archivos
         if q == 'savedvars':
             saved_vars()
+            continue
 
 
+        # Imprime en pantalla una varaible
         if q.startswith('p '):
             name = slugify(q[2:])[:MAX_VARIABLE_NAME_LEN]
             if name in variables:
@@ -658,26 +784,32 @@ def main():
             continue
 
 
+        # Setea modelo de chatgpt
         if q.startswith('setmodel '):
             name = slugify(q[9:])[:100]
             CURRENT_AI_MODEL = name
             continue
 
 
-        if q.upper() == 'S':
+        # Sale del sistema
+        if q.upper() in ('S', 'SALIR', 'EXIT', '?!S', '?!SALIR', '?!EXIT'):
             print('Hasta luego.\n')
             Salir = True
             return
         
         
+        # Consulta a chatgpt
         if q.startswith('?'):
             variables['lastq'] = q[1:]
             print_warn('Esperando respuesta de ChatGPT...')
-            r = query_gpt(q, client, current_system_role)
+            r = query_gpt(q, client)
             variables['lastr'] = r
             print(r)
-        else:
-            print_err('Comando incompleto o no reconocido.')
+            continue
+        
+        
+        print_err(f'Comando incompleto o no reconocido: "{q}"')
+        continue
         
         
 if __name__ == '__main__':

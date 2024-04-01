@@ -1,0 +1,227 @@
+def main():
+    if not q.strip():
+        print('Escriba sin comillas "help" para ayuda, o presione "S" y luego ENTER para salir.\n')
+        continue
+
+    if only_chatgpt_mode:
+                    
+        if q == '!normalmode':
+            only_chatgpt_mode = False
+            print_warn('Cambiado a modo de uso normal.')
+            continue
+        
+        # Le agrego el signo de pregunta adelante
+        # si ya no lo tiene
+        q = ('?' + q) if q[0] != '?' else q
+        
+
+    if q in ('help', 'ayuda') or q in ('?help', '?ayuda'):
+        print(help_str)
+        continue
+
+    if q == '!chatgptmode':
+        only_chatgpt_mode = True
+        print_warn(
+            'Cambiado a modo de uso ChatGPT.\n'
+            '  Escriba "!normalmode" para volver al modo normal.\n'
+            '  Escriba "!S" para salir de la aplicación.\n')
+        continue
+
+    if q.startswith('pre '):
+        prefix = q[4:]
+        continue
+
+    if prefix:
+        if not only_chatgpt_mode:
+            q = prefix + q
+
+    # Interpretar una varaible
+    if q.startswith(':'):
+        parts = q.split(' ', 1)
+        name = slugify(parts[0][1 : 1 + MAX_VARIABLE_NAME_LEN])
+        params = parts[1] if len(parts) == 2 else ''
+        if name in variables:
+            q = variables[name] + params
+            suspense = ''
+            if len(q) > VARIABLE_CONTENT_PREVIEW:
+                suspense = '...'
+            print_warn(f'Interpretando "{q[:VARIABLE_CONTENT_PREVIEW]}{suspense}"')
+            # print_warn(f'Interpretando "{q}"...')
+        else:
+            print_err(f'Variable "{name}" no definida.')
+            continue
+
+    # Expandir variable
+    try:
+        q = expand_query(q)
+    except ValueError as ex1:
+        print_err(ex1)
+        continue
+    except Exception as ex:
+        import traceback; traceback.print_exc()
+        continue
+
+
+    # Establecer rol de chatgpt
+    if q.startswith('srol'):
+        parts = q.split(' ', 1)
+        if parts[0] == 'srol':
+            if len(parts) == 2:
+                variables['CHATGPT_ROLE'] = parts[1].strip()
+                print('Ok.')
+            else:
+                print_warn(f'El rol actual del asistente es:\n "{variables['CHATGPT_ROLE']}"')
+                
+            continue
+
+
+    # Ejecutar comando de shell
+    if q.startswith('! '):
+        try:
+            variables['lastcmd'] = \
+                run_and_capture_output(q[2:])
+        except Exception as ex:
+            print_err(ex)                
+        continue
+
+
+    # Delimitador 1
+    if q.startswith('d1 '):
+        delim1 = q[3:]
+        if not delim1: delim1 = '{'
+        continue
+
+
+    # Delimitador 2
+    if q.startswith('d2 '):
+        delim2 = q[3:]
+        if not delim2: delim2 = '}'
+        continue
+
+
+    # Listar variables
+    if q in ('v', 'vars') or q.startswith('v ') or q.startswith('vars '):
+        list_vars(q)
+        continue
+
+
+    # Buscar dentro de variables
+    if q.startswith('findv '):
+        list_vars_by_value(q)
+        continue
+
+
+    # Copiar una variable a otra
+    if q.startswith('cp '):
+        parts = q[3:].split(' ')
+        if len(parts) != 2:
+            print_err('Sintaxis no válida.')
+            continue
+
+        if not parts[0] in variables:
+            print_err(f'No existe la variable de origen "{parts[0]}".')
+            continue
+
+        variables[parts[1]] = variables[parts[0]]
+        continue
+
+
+    # Renombrar una variable
+    if q.startswith('ren '):
+        parts = q[4:].split(' ')
+        if len(parts) != 2:
+            print_err('Sintaxis no válida.')
+            continue
+
+        if not parts[0] in variables:
+            print_err(f'No existe la variable de origen "{parts[0]}".')
+            continue
+        
+        if parts[1] in variables:
+            print_err(f'La variable "{parts[1]}" ya existe. No se renombrará.')
+            continue
+
+        variables[parts[1]] = variables[parts[0]]
+        del variables[parts[0]]
+        continue
+
+
+
+    # Asignar un valor a una variable
+    if q.find('=') in range(0, MAX_VARIABLE_NAME_LEN + 1):
+        parts = q.split('=', 1)
+        name = parts[0].strip()[:MAX_VARIABLE_NAME_LEN]
+        if is_valid_identifier(name):
+            variables[name] = parts[1] if parts[1] != None else ''
+            continue
+        
+
+    # Borrar una variable
+    if q.startswith('del '):
+        name = q[4 : 4+MAX_VARIABLE_NAME_LEN]
+        if name in variables:
+            del variables[name]
+            print_warn(f'Variable "{name}" borrada.')
+        else:
+            print_err(f'Variable "{name}" no encontrada.')
+        continue
+
+
+    # Borrar todas las variables
+    if q == 'clearvars':
+        variables.clear()
+        continue
+
+
+    # guardar las variables a un archivo
+    if q.startswith('savevars '):
+        name = slugify(q[9:])[:MAX_VARIABLE_NAME_LEN] + '.save'
+        save_vars(name)
+        continue
+        
+
+    # cargar variables desde un archivo
+    if q.startswith('loadvars '):
+        name = slugify(q[9:])[:MAX_VARIABLE_NAME_LEN] + '.save'
+        load_vars(name)
+        continue
+        
+
+    # Lista variables guardadas en archivos
+    if q == 'savedvars':
+        saved_vars()
+        continue
+
+
+    # Imprime en pantalla una varaible
+    if q.startswith('p '):
+        name = slugify(q[2:])[:MAX_VARIABLE_NAME_LEN]
+        if name in variables:
+            print(variables[name])
+        else:
+            print_err(f'Variable "{name}" no definida.')
+        continue
+
+
+    # Setea modelo de chatgpt
+    if q.startswith('setmodel '):
+        name = slugify(q[9:])[:100]
+        CURRENT_AI_MODEL = name
+        continue
+
+
+    # Sale del sistema
+    if q.upper() in ('S', 'SALIR', 'EXIT', '?!S', '?!SALIR', '?!EXIT'):
+        print('Hasta luego.\n')
+        Salir = True
+        return
+
+
+    # Consulta a chatgpt
+    if q.startswith('?'):
+        variables['lastq'] = q[1:]
+        print_warn('Esperando respuesta de ChatGPT...')
+        r = query_gpt(q, client)
+        variables['lastr'] = r
+        print(r)
+        continue
